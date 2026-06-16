@@ -5,7 +5,8 @@ from enum import Enum
 from pathlib import Path
 
 import pandas as pd
-from pykrx import stock
+
+from app.database.sqlite_store import SQLiteStore, RAW_COLUMNS as _DB_RAW_COLUMNS, store as _default_store
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class ConflictResolution(Enum):
 
 
 def _fetch_from_pykrx(market_code: str, start_date: str = "1980-01-01") -> pd.DataFrame:
+    from pykrx import stock  # lazy import — avoids pkg_resources at module load time
     today = datetime.today().strftime("%Y-%m-%d")
     df = stock.get_index_ohlcv(start_date, today, market_code)
     df.index = pd.to_datetime(df.index)
@@ -104,9 +106,19 @@ def _add_derived_columns(data: pd.DataFrame) -> pd.DataFrame:
 
 
 class MarketRepository:
-    def __init__(self) -> None:
+    def __init__(self, store: SQLiteStore = _default_store) -> None:
+        self._store = store
         self._data: dict[str, pd.DataFrame] = {}
         self._lock = threading.Lock()
+
+    def load_from_db(self, market: str) -> None:
+        df = self._store.load_market(market)
+        if df.empty:
+            return
+        fresh = _add_derived_columns(df)
+        with self._lock:
+            self._data[market] = fresh
+        logger.info("[%s] SQLite 복구 완료: %d행", market, len(fresh))
 
     def load(
         self,
