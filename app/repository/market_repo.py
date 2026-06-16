@@ -33,12 +33,22 @@ class ConflictResolution(Enum):
     RAISE_ERROR  = "error"
 
 
-def _fetch_from_pykrx(market_code: str, start_date: str = "1980-01-01") -> pd.DataFrame:
+def _fetch_from_pykrx(market_code: str, start_date: str, end_date: str) -> pd.DataFrame:
     from pykrx import stock  # lazy import — avoids pkg_resources at module load time
-    today = datetime.today().strftime("%Y-%m-%d")
-    df = stock.get_index_ohlcv(start_date, today, market_code)
+    df = stock.get_index_ohlcv(start_date, end_date, market_code)
     df.index = pd.to_datetime(df.index)
     return df[RAW_COLUMNS]
+
+
+def _next_start(checkpoint: str | None) -> datetime:
+    if checkpoint is None:
+        return datetime(1980, 1, 1)
+    return datetime.strptime(checkpoint, "%Y-%m-%d") + timedelta(days=1)
+
+
+def _prefilter_with_set(df: pd.DataFrame, existing_dates: set[str]) -> pd.DataFrame:
+    mask = ~df.index.strftime("%Y-%m-%d").isin(existing_dates)
+    return df[mask]
 
 
 def _load_from_csv(path: Path) -> pd.DataFrame:
@@ -120,49 +130,33 @@ class MarketRepository:
             self._data[market] = fresh
         logger.info("[%s] SQLite 복구 완료: %d행", market, len(fresh))
 
-    def load(
-        self,
-        market: str,
-        csv_path: Path | None = CSV_PATH,
-        conflict: ConflictResolution = ConflictResolution.PREFER_PYKRX,
-    ) -> None:
-        # 비싼 I/O와 계산은 락 밖에서 수행 — 공유 상태를 건드리지 않음
-        try:
-            existing = self._data.get(market)
-            code     = MARKET_CODES[market]
+    def load(self, market: str) -> None:
+        code = MARKET_CODES[market]
+        existing_dates = self._store.get_all_dates(market)
+        checkpoint = self._store.get_checkpoint(market)
+        current = _next_start(checkpoint)
+        today = datetime.today()
 
-            if existing is not None:
-                # 이미 데이터가 있으면 마지막 날짜 다음부터만 fetch (incremental)
-                start_date = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
-                df_new = _fetch_from_pykrx(code, start_date)
+        while current <= today:
+            year_end = min(datetime(current.year, 12, 31), today)
+            year_end_str = year_end.strftime("%Y-%m-%d")
+            try:
+                chunk = _fetch_from_pykrx(code, current.strftime("%Y-%m-%d"), year_end_str)
+                if chunk.empty:
+                    break
+                filtered = _prefilter_with_set(chunk, existing_dates)
+                if not filtered.empty:
+                    self._store.upsert_chunk(market, filtered, year_end_str)
+                    existing_dates.update(filtered.index.strftime("%Y-%m-%d").tolist())
+            except Exception as exc:
+                logger.error("[%s] fetch 실패 (%s): %s — 체크포인트 보존", market, year_end.date(), exc)
+                break
+            current = datetime(current.year + 1, 1, 1)
 
-                if df_new.empty:
-                    logger.info("[%s] 새 데이터 없음, 업데이트 건너뜀", market)
-                    return
-
-                # 기존 데이터의 기본 컬럼과 신규 데이터를 합쳐 파생 컬럼 재계산
-                df_base  = existing[_BASE_COLS]
-                df_merged = pd.concat([df_base, df_new[_BASE_COLS]])
-            else:
-                # 초기 로딩: 전체 기간 fetch 후 CSV 병합
-                df_pykrx = _fetch_from_pykrx(code)
-                if csv_path and csv_path.exists():
-                    df_csv    = _load_from_csv(csv_path)
-                    df_merged = _merge_sources(df_pykrx, df_csv, conflict)
-                else:
-                    logger.info("CSV 없음 — pykrx 단독 사용")
-                    df_merged = df_pykrx
-
-            new_data = _add_derived_columns(df_merged)
-        except Exception as exc:
-            logger.error("[%s] 데이터 처리 실패: %s", market, exc)
-            raise
-
-        # 계산 완료 후 락 안에서 원자적 교체 — 실패해도 이전 데이터 유지
+        fresh = _add_derived_columns(self._store.load_market(market))
         with self._lock:
-            self._data[market] = new_data
-
-        logger.info("[%s] 적재 완료: %d행", market, len(new_data))
+            self._data[market] = fresh
+        logger.info("[%s] 적재 완료: %d행", market, len(fresh))
 
     def get(self, market: str) -> pd.DataFrame:
         if market not in self._data:
