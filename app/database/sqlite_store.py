@@ -100,7 +100,16 @@ class SQLiteStore:
         self._conn.commit()
 
     def upsert_chunk(self, market: str, df: pd.DataFrame, checkpoint_date: str | None = None) -> None:
-        raise NotImplementedError
+        with self._write_lock:
+            with self._conn:
+                if not df.empty:
+                    rows = _df_to_rows(market, df)
+                    self._conn.executemany(_UPSERT_SQL, rows)
+                if checkpoint_date is not None:
+                    self._conn.execute(
+                        _UPSERT_CHECKPOINT,
+                        (market, checkpoint_date, datetime.now().isoformat()),
+                    )
 
     def load_market(self, market: str) -> pd.DataFrame:
         raise NotImplementedError

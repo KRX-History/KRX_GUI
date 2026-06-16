@@ -183,3 +183,84 @@ def test_initialize_idempotent_tables(raw_store):
         ).fetchall()
     }
     assert tables_before == tables_after
+
+
+# ── upsert_chunk() tests ───────────────────────────────────────────────────────
+
+
+def test_upsert_chunk_inserts_rows(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    conn = sqlite3.connect(str(store._db_path))
+    count = conn.execute("SELECT COUNT(*) FROM market_data WHERE market='KOSPI'").fetchone()[0]
+    conn.close()
+    assert count == 2
+
+
+def test_upsert_chunk_no_duplicate_on_repeat(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    conn = sqlite3.connect(str(store._db_path))
+    count = conn.execute("SELECT COUNT(*) FROM market_data WHERE market='KOSPI'").fetchone()[0]
+    conn.close()
+    assert count == 2
+
+
+def test_upsert_chunk_updates_checkpoint(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    conn = sqlite3.connect(str(store._db_path))
+    date = conn.execute(
+        "SELECT last_success_date FROM fetch_checkpoints WHERE market='KOSPI'"
+    ).fetchone()[0]
+    conn.close()
+    assert date == "2025-01-03"
+
+
+def test_upsert_chunk_none_checkpoint_skips_checkpoint_update(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, checkpoint_date=None)
+    conn = sqlite3.connect(str(store._db_path))
+    row = conn.execute(
+        "SELECT last_success_date FROM fetch_checkpoints WHERE market='KOSPI'"
+    ).fetchone()
+    conn.close()
+    assert row is None
+
+
+def test_upsert_chunk_empty_df_with_checkpoint(store):
+    empty = pd.DataFrame(columns=RAW_COLUMNS)
+    empty.index = pd.to_datetime([])
+    store.upsert_chunk("KOSPI", empty, "2025-01-03")
+    conn = sqlite3.connect(str(store._db_path))
+    date = conn.execute(
+        "SELECT last_success_date FROM fetch_checkpoints WHERE market='KOSPI'"
+    ).fetchone()[0]
+    conn.close()
+    assert date == "2025-01-03"
+
+
+def test_upsert_chunk_overwrites_changed_values(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    updated = sample_df.copy()
+    updated["종가"] = [999.0, 888.0]
+    store.upsert_chunk("KOSPI", updated, "2025-01-03")
+    conn = sqlite3.connect(str(store._db_path))
+    rows = conn.execute(
+        "SELECT 종가 FROM market_data WHERE market='KOSPI' ORDER BY date"
+    ).fetchall()
+    conn.close()
+    assert rows[0][0] == 999.0
+    assert rows[1][0] == 888.0
+
+
+def test_upsert_chunk_separate_markets_independent(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    store.upsert_chunk("KOSDAQ", sample_df, "2025-01-03")
+    conn = sqlite3.connect(str(store._db_path))
+    kospi_count = conn.execute(
+        "SELECT COUNT(*) FROM market_data WHERE market='KOSPI'"
+    ).fetchone()[0]
+    kosdaq_count = conn.execute(
+        "SELECT COUNT(*) FROM market_data WHERE market='KOSDAQ'"
+    ).fetchone()[0]
+    conn.close()
+    assert kospi_count == 2
+    assert kosdaq_count == 2
