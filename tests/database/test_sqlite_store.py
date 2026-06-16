@@ -1,9 +1,10 @@
 import math
+import sqlite3
 
 import pandas as pd
 import pytest
 
-from app.database.sqlite_store import _df_to_rows, RAW_COLUMNS
+from app.database.sqlite_store import SQLiteStore, _df_to_rows, RAW_COLUMNS
 
 
 @pytest.fixture
@@ -51,3 +52,134 @@ def test_df_to_rows_normal_value_preserved(sample_df):
     rows = _df_to_rows("KOSPI", sample_df)
     종가_idx = 2 + RAW_COLUMNS.index("종가")
     assert rows[0][종가_idx] == 103.0
+
+
+# ── initialize() tests ─────────────────────────────────────────────────────────
+
+
+def _get_table_info(conn: sqlite3.Connection, table: str) -> list[dict]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    keys = ["cid", "name", "type", "notnull", "dflt_value", "pk"]
+    return [dict(zip(keys, row)) for row in rows]
+
+
+@pytest.fixture
+def raw_store(tmp_path):
+    """SQLiteStore that has NOT been initialized — caller controls initialize()."""
+    s = SQLiteStore(db_path=tmp_path / "init_test.db")
+    yield s
+    s.close()
+
+
+# Group A: Connection state
+
+def test_initialize_sets_connection(raw_store):
+    assert raw_store._conn is None
+    raw_store.initialize()
+    assert raw_store._conn is not None
+
+
+# Group B: PRAGMA settings
+
+def test_initialize_enables_wal_mode(raw_store):
+    raw_store.initialize()
+    assert raw_store._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_initialize_sets_synchronous_normal(raw_store):
+    raw_store.initialize()
+    assert raw_store._conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+
+
+# Group C: Schema correctness
+
+def test_initialize_creates_market_data_table(raw_store):
+    raw_store.initialize()
+    row = raw_store._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='market_data'"
+    ).fetchone()
+    assert row is not None
+
+
+def test_initialize_market_data_columns_and_not_null(raw_store):
+    raw_store.initialize()
+    cols = _get_table_info(raw_store._conn, "market_data")
+    names = [c["name"] for c in cols]
+    assert "market" in names and "date" in names
+    market_col = next(c for c in cols if c["name"] == "market")
+    date_col = next(c for c in cols if c["name"] == "date")
+    assert market_col["notnull"] == 1
+    assert date_col["notnull"] == 1
+
+
+def test_initialize_creates_fetch_checkpoints_table(raw_store):
+    raw_store.initialize()
+    row = raw_store._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fetch_checkpoints'"
+    ).fetchone()
+    assert row is not None
+
+
+def test_initialize_fetch_checkpoints_columns(raw_store):
+    raw_store.initialize()
+    cols = _get_table_info(raw_store._conn, "fetch_checkpoints")
+    names = [c["name"] for c in cols]
+    assert "market" in names
+    assert "last_success_date" in names
+    assert "updated_at" in names
+
+
+def test_initialize_creates_date_index(raw_store):
+    raw_store.initialize()
+    row = raw_store._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_market_data_date'"
+    ).fetchone()
+    assert row is not None
+
+
+def test_initialize_index_ddl_has_date_desc(raw_store):
+    raw_store.initialize()
+    row = raw_store._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_market_data_date'"
+    ).fetchone()
+    assert row is not None
+    assert "date DESC" in row[0]
+
+
+# Group D: Lifecycle / idempotency
+
+def test_initialize_schema_persists_after_reopen(tmp_path):
+    db = tmp_path / "persist_test.db"
+    s1 = SQLiteStore(db_path=db)
+    s1.initialize()
+    s1.close()
+
+    s2 = SQLiteStore(db_path=db)
+    s2.initialize()
+    row = s2._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='market_data'"
+    ).fetchone()
+    assert row is not None
+    s2.close()
+
+
+def test_initialize_second_call_does_not_raise(raw_store):
+    raw_store.initialize()
+    assert raw_store._conn is not None  # guard: first call must have opened connection
+    raw_store.initialize()              # second call must not raise
+
+
+def test_initialize_idempotent_tables(raw_store):
+    raw_store.initialize()
+    tables_before = {
+        r[0] for r in raw_store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    raw_store.initialize()
+    tables_after = {
+        r[0] for r in raw_store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert tables_before == tables_after

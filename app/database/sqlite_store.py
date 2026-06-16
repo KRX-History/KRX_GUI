@@ -91,7 +91,13 @@ class SQLiteStore:
         self._write_lock = threading.Lock()
 
     def initialize(self) -> None:
-        pass  # Task 3에서 구현
+        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute(_CREATE_MARKET_DATA)
+        self._conn.execute(_CREATE_CHECKPOINTS)
+        self._conn.execute(_CREATE_INDEX)
+        self._conn.commit()
 
     def upsert_chunk(self, market: str, df: pd.DataFrame, checkpoint_date: str | None = None) -> None:
         raise NotImplementedError
