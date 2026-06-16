@@ -1,4 +1,5 @@
 import logging
+import threading
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -82,40 +83,21 @@ def _merge_sources(
 
 
 def _add_derived_columns(data: pd.DataFrame) -> pd.DataFrame:
+    # 모든 컬럼을 숫자형으로 유지. 포맷팅은 API 응답 직렬화 시점에만 수행.
     return (
         data
         .assign(
-            등락률_raw=lambda d: d["종가"].pct_change() * 100,
-            등락폭_raw=lambda d: d["종가"].diff(),
+            등락률=lambda d: d["종가"].pct_change() * 100,
+            등락폭=lambda d: d["종가"].diff(),
         )
-        .assign(
-            등락률=lambda d: d["등락률_raw"].map(
-                lambda x: f"{x:.2f}%" if pd.notnull(x) else "0.00%"
-            ),
-            등락폭=lambda d: d["등락폭_raw"].map(
-                lambda x: f"{x:.2f}" if pd.notnull(x) else "0.00"
-            ),
-            거래대금=lambda d: d["거래대금"].map(
-                lambda x: f"{int(x):,}" if pd.notnull(x) else "0"
-            ),
-            상장시가총액=lambda d: d["상장시가총액"].map(
-                lambda x: f"{int(x):,}" if pd.notnull(x) else "0"
-            ),
-            등락률_raw=lambda d: d["등락률_raw"].map(
-                lambda x: f"{x:.2f}" if pd.notnull(x) else "0.00"
-            ),
-            등락폭_raw=lambda d: d["등락폭_raw"].map(
-                lambda x: f"{x:.2f}" if pd.notnull(x) else "0.00"
-            ),
-        )
-        [["종가", "등락폭", "등락률", "시가", "고가", "저가",
-          "거래대금", "상장시가총액", "등락률_raw", "등락폭_raw"]]
+        [["종가", "등락폭", "등락률", "시가", "고가", "저가", "거래대금", "상장시가총액"]]
     )
 
 
 class MarketRepository:
     def __init__(self) -> None:
         self._data: dict[str, pd.DataFrame] = {}
+        self._lock = threading.Lock()
 
     def load(
         self,
@@ -123,7 +105,7 @@ class MarketRepository:
         csv_path: Path | None = CSV_PATH,
         conflict: ConflictResolution = ConflictResolution.PREFER_PYKRX,
     ) -> None:
-        backup = self._data.get(market)
+        # 비싼 I/O와 계산은 락 밖에서 수행 — 공유 상태를 건드리지 않음
         try:
             code     = MARKET_CODES[market]
             df_pykrx = _fetch_from_pykrx(code)
@@ -135,16 +117,16 @@ class MarketRepository:
                 logger.info("CSV 없음 — pykrx 단독 사용")
                 df_merged = df_pykrx
 
-            self._data[market] = _add_derived_columns(df_merged)
-            logger.info("[%s] 적재 완료: %d행", market, len(self._data[market]))
-
+            new_data = _add_derived_columns(df_merged)
         except Exception as exc:
-            if backup is not None:
-                self._data[market] = backup
-                logger.error("[%s] 적재 실패, 이전 데이터 유지: %s", market, exc)
-            else:
-                logger.error("[%s] 초기 적재 실패: %s", market, exc)
+            logger.error("[%s] 데이터 처리 실패: %s", market, exc)
             raise
+
+        # 계산 완료 후 락 안에서 원자적 교체 — 실패해도 이전 데이터 유지
+        with self._lock:
+            self._data[market] = new_data
+
+        logger.info("[%s] 적재 완료: %d행", market, len(new_data))
 
     def get(self, market: str) -> pd.DataFrame:
         if market not in self._data:

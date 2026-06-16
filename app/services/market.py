@@ -2,20 +2,9 @@ import pandas as pd
 
 
 def _normalize_criteria(criteria: str, operator: str) -> str:
-    if criteria == "등락률":
-        return "등락률_raw"
     if criteria == "장중 가격":
         return "고가" if operator == "이상" else "저가"
-    if criteria == "등락폭":
-        return "등락폭_raw"
     return criteria
-
-
-def _to_numeric(data: pd.DataFrame, col: str) -> pd.DataFrame:
-    if data[col].dtype == "object":
-        data = data.copy()
-        data[col] = data[col].str.replace(",", "", regex=False).astype(float)
-    return data
 
 
 _DISPLAY_COLS = ["종가", "등락폭", "등락률", "시가", "고가", "저가", "거래대금", "상장시가총액"]
@@ -27,8 +16,7 @@ def filter_data(
     operator: str,
     value: float,
 ) -> pd.DataFrame:
-    col  = _normalize_criteria(criteria, operator)
-    data = _to_numeric(data, col)
+    col      = _normalize_criteria(criteria, operator)
     filtered = (
         data[data[col] >= value]
         if operator == "이상"
@@ -45,8 +33,7 @@ def get_latest_match(
     operator: str,
     value: float,
 ) -> dict:
-    col  = _normalize_criteria(criteria, operator)
-    data = _to_numeric(data, col)
+    col      = _normalize_criteria(criteria, operator)
     filtered = (
         data[data[col] >= value]
         if operator == "이상"
@@ -59,11 +46,10 @@ def get_latest_match(
     latest_idx   = filtered.index[-1]
     latest_value = filtered.iloc[-1][col]
     rank         = int(data[col].rank(ascending=False, method="min")[latest_idx])
-    display_col  = "등락률" if col == "등락률_raw" else col
 
     return {
         "found":       True,
-        "criteria":    display_col,
+        "criteria":    col,
         "latest_date": latest_idx.strftime("%Y-%m-%d"),
         "value":       latest_value,
         "rank":        rank,
@@ -124,13 +110,6 @@ def _calc_yearly_eoy(data: pd.DataFrame, special_year: int | None = None) -> pd.
 
 
 def get_yearly_info(data: pd.DataFrame, market: str) -> pd.DataFrame:
-    data = data.copy()
-    if data["거래대금"].dtype == "object":
-        data["거래대금"] = data["거래대금"].str.replace(",", "", regex=False)
-    data["거래대금"] = pd.to_numeric(data["거래대금"], errors="coerce")
-
-    if not pd.api.types.is_numeric_dtype(data["거래대금"]):
-        raise ValueError("거래대금 열이 숫자형 데이터가 아닙니다.")
 
     yearly_avg = data.resample("YE").agg({"거래대금": "mean"})
     yearly_avg["거래대금 등락률"] = yearly_avg["거래대금"].pct_change() * 100
@@ -215,9 +194,8 @@ def get_top_n(
     operator: str,
     n: int = 10,
 ) -> pd.DataFrame:
-    col  = _normalize_criteria(criteria, operator)
-    data = _to_numeric(data, col)
-    top  = (
+    col = _normalize_criteria(criteria, operator)
+    top = (
         data.nlargest(n, col)
         if operator == "이상"
         else data.nsmallest(n, col)
