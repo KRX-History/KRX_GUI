@@ -264,3 +264,58 @@ def test_upsert_chunk_separate_markets_independent(store, sample_df):
     conn.close()
     assert kospi_count == 2
     assert kosdaq_count == 2
+
+
+# ── read method tests (Task 5) ─────────────────────────────────────────────────
+
+
+def test_load_market_returns_dataframe(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    df = store.load_market("KOSPI")
+    assert len(df) == 2
+    assert list(df.columns) == RAW_COLUMNS
+    assert str(df.index.dtype) == "datetime64[ns]"
+
+
+def test_load_market_empty_returns_empty_df(store):
+    df = store.load_market("KOSPI")
+    assert df.empty
+
+
+def test_load_market_null_preserved_as_nan(store):
+    df_with_null = pd.DataFrame(
+        {
+            "시가": [float("nan")],
+            "고가": [100.0],
+            "저가": [90.0],
+            "종가": [95.0],
+            "거래량": [500.0],
+            "거래대금": [47500.0],
+            "상장시가총액": [1e11],
+        },
+        index=pd.to_datetime(["2025-01-02"]),
+    )
+    store.upsert_chunk("KOSPI", df_with_null)
+    df = store.load_market("KOSPI")
+    assert math.isnan(df.iloc[0]["시가"])
+
+
+def test_get_checkpoint_returns_none_if_missing(store):
+    assert store.get_checkpoint("KOSPI") is None
+
+
+def test_get_checkpoint_returns_date(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    assert store.get_checkpoint("KOSPI") == "2025-01-03"
+
+
+def test_get_all_dates_returns_set(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    dates = store.get_all_dates("KOSPI")
+    assert dates == {"2025-01-02", "2025-01-03"}
+
+
+def test_markets_in_db_returns_all_markets(store, sample_df):
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    store.upsert_chunk("KOSDAQ", sample_df, "2025-01-03")
+    assert set(store.markets_in_db()) == {"KOSPI", "KOSDAQ"}

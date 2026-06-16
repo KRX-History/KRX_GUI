@@ -112,16 +112,27 @@ class SQLiteStore:
                     )
 
     def load_market(self, market: str) -> pd.DataFrame:
-        raise NotImplementedError
+        cursor = self._conn.execute(_SELECT_MARKET, (market,))
+        rows = cursor.fetchall()
+        if not rows:
+            return pd.DataFrame(columns=RAW_COLUMNS, index=pd.DatetimeIndex([], name="날짜"))
+        df = pd.DataFrame(rows, columns=["날짜"] + RAW_COLUMNS)
+        df["날짜"] = pd.to_datetime(df["날짜"])
+        df = df.set_index("날짜")
+        return df.astype(float)
 
     def get_checkpoint(self, market: str) -> str | None:
-        raise NotImplementedError
+        cursor = self._conn.execute(_SELECT_CHECKPOINT, (market,))
+        row = cursor.fetchone()
+        return row[0] if row else None
 
     def get_all_dates(self, market: str) -> set[str]:
-        raise NotImplementedError
+        cursor = self._conn.execute(_SELECT_ALL_DATES, (market,))
+        return {row[0] for row in cursor.fetchall()}
 
     def markets_in_db(self) -> list[str]:
-        raise NotImplementedError
+        cursor = self._conn.execute(_SELECT_MARKETS)
+        return [row[0] for row in cursor.fetchall()]
 
     def close(self) -> None:
         if self._conn:
