@@ -1,6 +1,6 @@
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 
@@ -19,6 +19,9 @@ MARKET_CODES = {
 
 RAW_COLUMNS = ["시가", "고가", "저가", "종가", "거래량", "거래대금", "상장시가총액"]
 
+# 거래량은 파생 컬럼 계산에 불필요 — incremental concat 시 기준 컬럼
+_BASE_COLS = ["시가", "고가", "저가", "종가", "거래대금", "상장시가총액"]
+
 
 class ConflictResolution(Enum):
     PREFER_PYKRX = "pykrx"
@@ -26,9 +29,9 @@ class ConflictResolution(Enum):
     RAISE_ERROR  = "error"
 
 
-def _fetch_from_pykrx(market_code: str) -> pd.DataFrame:
+def _fetch_from_pykrx(market_code: str, start_date: str = "1980-01-01") -> pd.DataFrame:
     today = datetime.today().strftime("%Y-%m-%d")
-    df = stock.get_index_ohlcv("1980-01-01", today, market_code)
+    df = stock.get_index_ohlcv(start_date, today, market_code)
     df.index = pd.to_datetime(df.index)
     return df[RAW_COLUMNS]
 
@@ -48,15 +51,13 @@ def _merge_sources(
     conflict: ConflictResolution = ConflictResolution.PREFER_PYKRX,
     tolerance: float = 0.01,
 ) -> pd.DataFrame:
-    primary   = df_primary.copy()
-    secondary = df_secondary.copy()
-
-    overlap = primary.index.intersection(secondary.index)
+    overlap = df_primary.index.intersection(df_secondary.index)
 
     if len(overlap) > 0:
+        # 원본 참조로 불일치 검사 — copy 불필요
         diff_pct = (
-            (primary.loc[overlap, "종가"] - secondary.loc[overlap, "종가"])
-            / secondary.loc[overlap, "종가"]
+            (df_primary.loc[overlap, "종가"] - df_secondary.loc[overlap, "종가"])
+            / df_secondary.loc[overlap, "종가"]
         ).abs()
         conflicts = diff_pct[diff_pct > tolerance]
 
@@ -66,12 +67,15 @@ def _merge_sources(
                 raise ValueError(msg)
             logger.warning("%s — '%s' 우선 적용", msg, conflict.value)
 
+        # drop() 대신 boolean mask — 패배 소스의 view만 선택, copy 없음
         if conflict == ConflictResolution.PREFER_PYKRX:
-            secondary = secondary.drop(index=overlap)
+            merged = pd.concat([df_primary, df_secondary[~df_secondary.index.isin(overlap)]])
         else:
-            primary = primary.drop(index=overlap)
+            merged = pd.concat([df_primary[~df_primary.index.isin(overlap)], df_secondary])
+    else:
+        merged = pd.concat([df_primary, df_secondary])
 
-    merged = pd.concat([primary, secondary]).sort_index()
+    merged = merged.sort_index()
 
     if merged.index.duplicated().any():
         raise RuntimeError("병합 후 중복 인덱스 존재 — 로직 오류")
@@ -107,15 +111,30 @@ class MarketRepository:
     ) -> None:
         # 비싼 I/O와 계산은 락 밖에서 수행 — 공유 상태를 건드리지 않음
         try:
+            existing = self._data.get(market)
             code     = MARKET_CODES[market]
-            df_pykrx = _fetch_from_pykrx(code)
 
-            if csv_path and csv_path.exists():
-                df_csv    = _load_from_csv(csv_path)
-                df_merged = _merge_sources(df_pykrx, df_csv, conflict)
+            if existing is not None:
+                # 이미 데이터가 있으면 마지막 날짜 다음부터만 fetch (incremental)
+                start_date = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
+                df_new = _fetch_from_pykrx(code, start_date)
+
+                if df_new.empty:
+                    logger.info("[%s] 새 데이터 없음, 업데이트 건너뜀", market)
+                    return
+
+                # 기존 데이터의 기본 컬럼과 신규 데이터를 합쳐 파생 컬럼 재계산
+                df_base  = existing[_BASE_COLS]
+                df_merged = pd.concat([df_base, df_new[_BASE_COLS]])
             else:
-                logger.info("CSV 없음 — pykrx 단독 사용")
-                df_merged = df_pykrx
+                # 초기 로딩: 전체 기간 fetch 후 CSV 병합
+                df_pykrx = _fetch_from_pykrx(code)
+                if csv_path and csv_path.exists():
+                    df_csv    = _load_from_csv(csv_path)
+                    df_merged = _merge_sources(df_pykrx, df_csv, conflict)
+                else:
+                    logger.info("CSV 없음 — pykrx 단독 사용")
+                    df_merged = df_pykrx
 
             new_data = _add_derived_columns(df_merged)
         except Exception as exc:
@@ -131,7 +150,7 @@ class MarketRepository:
     def get(self, market: str) -> pd.DataFrame:
         if market not in self._data:
             raise KeyError(f"'{market}' 데이터가 적재되지 않았습니다.")
-        return self._data[market].copy()
+        return self._data[market]  # copy 책임은 실제로 변형이 필요한 서비스 레이어로 이동
 
     def is_loaded(self, market: str) -> bool:
         return market in self._data
