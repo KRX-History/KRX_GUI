@@ -161,7 +161,7 @@ def _df_to_rows(market: str, df: pd.DataFrame) -> list[tuple]:
 | 메서드 | 역할 |
 |---|---|
 | `initialize()` | WAL 설정, 테이블/인덱스 생성 |
-| `upsert_chunk(market, df, checkpoint_date)` | 삽입 + 체크포인트를 단일 트랜잭션으로 |
+| `upsert_chunk(market, df, checkpoint_date)` | 삽입 + 체크포인트를 단일 트랜잭션으로. `checkpoint_date=None`이면 체크포인트 갱신 생략 (CSV ingest용) |
 | `load_market(market)` | SQLite → DataFrame (락 불필요, WAL) |
 | `get_checkpoint(market)` | `last_success_date` 반환 |
 | `get_all_dates(market)` | 해당 시장 전체 날짜 Set 반환 (1회 쿼리) |
@@ -211,7 +211,7 @@ async def watch_csv(csv_path: Path, on_change: Callable) -> None:
 ```
 
 - `run_in_executor`: 동기 `ingest_csv()`를 스레드풀에서 실행 → 이벤트 루프 블로킹 없음
-- CSV 연관 시장: `CSV_MARKET = "KOSPI"` 상수로 설정 (기본값, 변경 가능)
+- CSV 연관 시장: `market_repo.py` 최상단 모듈 상수 `CSV_MARKET = "KOSPI"`로 설정. 변경 시 이 값만 수정.
 
 ### 6-4. `main.py` lifespan 수정
 
@@ -252,6 +252,8 @@ COMMIT
 
 - 청크 삽입 성공 → 체크포인트 갱신 → 다음 청크
 - pyKrx 실패 → ROLLBACK → 체크포인트 이전 값 유지 → 다음 `/refresh` 시 실패 지점부터 재개
+- 체크포인트 갱신 SQL: `INSERT OR REPLACE INTO fetch_checkpoints ...` (행 없을 때도 안전)
+- `checkpoint_date=None`일 때(CSV ingest): 체크포인트 SQL 실행 생략, 데이터 삽입만 수행
 
 ---
 
