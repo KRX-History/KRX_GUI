@@ -106,13 +106,18 @@ class MarketRepository:
             return self._data[market]
 
     def ingest_csv(self) -> None:
-        if not CSV_PATH.exists():
-            logger.warning("CSV 파일 없음: %s", CSV_PATH)
+        try:
+            df = _load_from_csv(CSV_PATH)
+        except (FileNotFoundError, IOError) as exc:
+            logger.warning("CSV 파일 읽기 실패: %s", exc)
             return
-        df = _load_from_csv(CSV_PATH)
         existing_dates = self._store.get_all_dates(CSV_MARKET)
         filtered = _prefilter_with_set(df, existing_dates)
-        if not filtered.empty:
+        if filtered.empty:
+            with self._lock:
+                if CSV_MARKET in self._data:
+                    return
+        else:
             checkpoint = filtered.index.strftime("%Y-%m-%d").max()
             self._store.upsert_chunk(CSV_MARKET, filtered, checkpoint)
         fresh = _add_derived_columns(self._store.load_market(CSV_MARKET))

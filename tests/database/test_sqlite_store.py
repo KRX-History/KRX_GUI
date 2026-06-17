@@ -129,23 +129,6 @@ def test_initialize_fetch_checkpoints_columns(raw_store):
     assert "updated_at" in names
 
 
-def test_initialize_creates_date_index(raw_store):
-    raw_store.initialize()
-    row = raw_store._conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_market_data_date'"
-    ).fetchone()
-    assert row is not None
-
-
-def test_initialize_index_ddl_has_date_desc(raw_store):
-    raw_store.initialize()
-    row = raw_store._conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_market_data_date'"
-    ).fetchone()
-    assert row is not None
-    assert "date DESC" in row[0]
-
-
 # Group D: Lifecycle / idempotency
 
 def test_initialize_schema_persists_after_reopen(tmp_path):
@@ -382,3 +365,15 @@ def test_close_blocks_while_write_lock_held(raw_store):
     assert not closed.wait(timeout=0.15), "close()가 lock 없이 즉시 실행됨 (RED)"
     raw_store._write_lock.release()
     assert closed.wait(timeout=1.0), "close()가 lock 해제 후 완료되지 않음"
+
+
+# ── M1: redundant secondary index must not exist ──────────────────────────────
+
+
+def test_no_redundant_secondary_index(raw_store):
+    """WITHOUT ROWID PK가 (market, date)를 커버하므로 보조 인덱스가 없어야 한다."""
+    raw_store.initialize()
+    row = raw_store._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_market_data_date'"
+    ).fetchone()
+    assert row is None, "중복 보조 인덱스 idx_market_data_date가 존재함 (RED)"

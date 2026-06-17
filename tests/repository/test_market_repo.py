@@ -313,3 +313,34 @@ def test_load_acquires_per_market_lock(repo, store):
     assert not done.wait(timeout=0.15), "load()이 _load_locks 없이 즉시 실행됨 (RED)"
     repo._load_locks["KOSPI"].release()
     assert done.wait(timeout=3.0), "load()이 lock 해제 후 완료되지 않음"
+
+
+# ── M2: ingest_csv() skips SQLite reload when no new data ─────────────────────
+
+
+def test_ingest_csv_skips_reload_when_no_new_data(repo, tmp_path):
+    """새 데이터 없고 이미 적재된 경우 store.load_market()이 호출되지 않아야 한다."""
+    csv_path = tmp_path / "test.csv"
+    row = "2025-06-02,2620.45,2638.90,2611.23,2630.17,412380000,8234500000000,2187650000000000\n"
+    csv_path.write_text("날짜,시가,고가,저가,종가,거래량,거래대금,상장시가총액\n" + row)
+
+    with patch("app.repository.market_repo.CSV_PATH", csv_path):
+        repo.ingest_csv()  # 최초 적재 → DB + 메모리 둘 다 설정됨
+
+    with patch.object(repo._store, "load_market") as mock_load:
+        with patch("app.repository.market_repo.CSV_PATH", csv_path):
+            repo.ingest_csv()  # 같은 날짜 → filtered.empty, 이미 적재됨
+    mock_load.assert_not_called()
+
+
+# ── M6: TOCTOU 방어 — _load_from_csv() 예외를 잡아야 한다 ────────────────────
+
+
+def test_ingest_csv_ioerror_does_not_raise(repo, tmp_path):
+    """파일이 읽기 도중 사라져도 예외가 전파되지 않아야 한다."""
+    csv_path = tmp_path / "test.csv"
+    csv_path.write_text("placeholder")  # exists() → True
+
+    with patch("app.repository.market_repo._load_from_csv", side_effect=FileNotFoundError("gone")):
+        with patch("app.repository.market_repo.CSV_PATH", csv_path):
+            repo.ingest_csv()  # must not raise

@@ -33,11 +33,6 @@ CREATE TABLE IF NOT EXISTS fetch_checkpoints (
 ) WITHOUT ROWID
 """
 
-_CREATE_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_market_data_date
-    ON market_data (market, date DESC)
-"""
-
 _UPSERT_SQL = """
 INSERT INTO market_data (market, date, 시가, 고가, 저가, 종가, 거래량, 거래대금, 상장시가총액)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -103,7 +98,6 @@ class SQLiteStore:
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute(_CREATE_MARKET_DATA)
             self._conn.execute(_CREATE_CHECKPOINTS)
-            self._conn.execute(_CREATE_INDEX)
             self._conn.commit()
 
     def upsert_chunk(self, market: str, df: pd.DataFrame, checkpoint_date: str | None = None) -> None:

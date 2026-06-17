@@ -78,7 +78,7 @@ async def test_lifespan_recovers_from_db_on_startup():
     with (
         patch.object(main_module, "store", mock_store),
         patch.object(main_module, "repo", mock_repo),
-        patch("app.main.watch_csv", noop_watch, create=True),
+        patch.object(main_module, "watch_csv", noop_watch),
     ):
         async with main_module.lifespan(FastAPI()):
             pass
@@ -101,7 +101,7 @@ async def test_lifespan_starts_csv_watcher():
     with (
         patch.object(main_module, "store", mock_store),
         patch.object(main_module, "repo", mock_repo),
-        patch("app.main.watch_csv", spy_watch, create=True),
+        patch.object(main_module, "watch_csv", spy_watch),
     ):
         async with main_module.lifespan(FastAPI()):
             await asyncio.sleep(0)  # give event loop one tick to start the task
@@ -130,7 +130,7 @@ async def test_lifespan_cancels_csv_task_on_shutdown():
     with (
         patch.object(main_module, "store", mock_store),
         patch.object(main_module, "repo", mock_repo),
-        patch("app.main.watch_csv", long_running_watch, create=True),
+        patch.object(main_module, "watch_csv", long_running_watch),
     ):
         async with main_module.lifespan(FastAPI()):
             await asyncio.sleep(0)  # tick 1: task starts, reaches asyncio.sleep(3600)
@@ -157,7 +157,7 @@ async def test_executor_errors_are_logged(caplog):
     with (
         patch.object(main_module, "store", mock_store),
         patch.object(main_module, "repo", mock_repo),
-        patch("app.main.watch_csv", noop_watch, create=True),
+        patch.object(main_module, "watch_csv", noop_watch),
         caplog.at_level(logging.ERROR, logger="app.main"),
     ):
         async with main_module.lifespan(FastAPI()):
@@ -192,7 +192,7 @@ async def test_shutdown_awaits_load_tasks_before_close():
     with (
         patch.object(main_module, "store", mock_store),
         patch.object(main_module, "repo", mock_repo),
-        patch("app.main.watch_csv", noop_watch, create=True),
+        patch.object(main_module, "watch_csv", noop_watch),
     ):
         async with main_module.lifespan(FastAPI()):
             pass
