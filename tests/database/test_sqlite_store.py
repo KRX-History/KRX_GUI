@@ -185,6 +185,14 @@ def test_initialize_idempotent_tables(raw_store):
     assert tables_before == tables_after
 
 
+def test_initialize_idempotent_connection_is_same_object(raw_store):
+    """initialize() 두 번 호출해도 Connection 객체가 재생성되지 않아야 한다."""
+    raw_store.initialize()
+    conn_first = raw_store._conn
+    raw_store.initialize()
+    assert raw_store._conn is conn_first  # 같은 객체 = 누수 없음
+
+
 # ── upsert_chunk() tests ───────────────────────────────────────────────────────
 
 

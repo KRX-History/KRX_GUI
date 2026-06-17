@@ -157,3 +157,52 @@ def test_load_continues_after_empty_year(repo, store):
 
     df = store.load_market("KOSPI")
     assert len(df) == 1  # 1981 data was stored despite empty 1980
+
+
+# ── Fix B: RAW_COLUMNS 단일 소스화 ─────────────────────────────────────────────
+
+
+def test_raw_columns_single_source():
+    """RAW_COLUMNS는 sqlite_store에서 단일 정의되어야 한다 (같은 객체)."""
+    from app.database.sqlite_store import RAW_COLUMNS as db_cols
+    from app.repository.market_repo import RAW_COLUMNS as repo_cols
+
+    assert db_cols is repo_cols
+
+
+# ── Fix C: 죽은 코드 삭제 ──────────────────────────────────────────────────────
+
+
+import app.repository.market_repo as _mr  # noqa: E402
+
+
+def test_dead_code_removed():
+    """삭제된 심볼이 모듈에 없어야 한다."""
+    assert not hasattr(_mr, "_load_from_csv")
+    assert not hasattr(_mr, "_merge_sources")
+    assert not hasattr(_mr, "ConflictResolution")
+    assert not hasattr(_mr, "_BASE_COLS")
+    assert not hasattr(_mr, "CSV_PATH")
+
+
+# ── Fix D: 빈 연도 건너뛰기 (회귀 테스트) ────────────────────────────────────
+
+
+def test_load_continues_past_empty_year(repo, store, sample_df):
+    """빈 연도를 만나도 루프가 종료되지 않고 현재 연도까지 fetch해야 한다."""
+    store.upsert_chunk("KOSPI", sample_df, "2024-12-31")
+
+    fetch_call_years: list[str] = []
+
+    def fake_fetch(code, start_date, end_date):
+        year = start_date[:4]
+        fetch_call_years.append(year)
+        if year == "2025":
+            return pd.DataFrame(columns=RAW_COLUMNS)
+        return sample_df
+
+    with patch("app.repository.market_repo._fetch_from_pykrx", side_effect=fake_fetch):
+        repo.load("KOSPI")
+
+    assert "2025" in fetch_call_years
+    assert "2026" in fetch_call_years, "2025이 비어도 2026 fetch가 이어져야 함"
