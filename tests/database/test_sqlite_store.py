@@ -359,3 +359,26 @@ def test_require_conn_raises_before_upsert_chunk(tmp_path, sample_df):
     s = _raw_store(tmp_path)
     with pytest.raises(RuntimeError, match="initialize"):
         s.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+
+
+# ── C2b: close() must acquire _write_lock ─────────────────────────────────────
+
+
+def test_close_blocks_while_write_lock_held(raw_store):
+    """close()는 _write_lock을 획득해야 한다."""
+    import threading
+
+    raw_store.initialize()
+
+    closed = threading.Event()
+
+    def try_close():
+        raw_store.close()
+        closed.set()
+
+    raw_store._write_lock.acquire()
+    t = threading.Thread(target=try_close, daemon=True)
+    t.start()
+    assert not closed.wait(timeout=0.15), "close()가 lock 없이 즉시 실행됨 (RED)"
+    raw_store._write_lock.release()
+    assert closed.wait(timeout=1.0), "close()가 lock 해제 후 완료되지 않음"

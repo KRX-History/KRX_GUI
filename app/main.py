@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -24,10 +25,14 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("SQLite 복구 실패 [%s]: %s", market, exc)
 
-    # 3. pyKrx 증분 갱신 (백그라운드 스레드, 서버 시작 블로킹 없음)
-    loop = asyncio.get_running_loop()
-    for market in MARKET_CODES:
-        loop.run_in_executor(None, repo.load, market)
+    # 3. pyKrx 증분 갱신 — 예외 로깅 포함 task wrapper
+    async def _bg_load(market: str) -> None:
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, repo.load, market)
+        except Exception:
+            logger.exception("pyKrx 증분 갱신 실패 [%s]", market)
+
+    load_tasks = [asyncio.create_task(_bg_load(m)) for m in MARKET_CODES]
 
     # 4. CSV 감시 시작
     csv_task = asyncio.create_task(watch_csv(CSV_PATH, repo.ingest_csv))
@@ -35,6 +40,9 @@ async def lifespan(app: FastAPI):
     yield
 
     csv_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await csv_task
+    await asyncio.gather(*load_tasks, return_exceptions=True)
     store.close()
 
 

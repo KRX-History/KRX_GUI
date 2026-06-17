@@ -1,4 +1,7 @@
 import asyncio
+import logging
+import time
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -134,3 +137,70 @@ async def test_lifespan_cancels_csv_task_on_shutdown():
         await asyncio.sleep(0)  # tick 2: CancelledError propagated into task
 
     assert was_cancelled
+
+
+# ── C1+C2a: executor error logging and shutdown ordering ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_executor_errors_are_logged(caplog):
+    """repo.load 예외가 소실되지 않고 error 로그로 기록되어야 한다."""
+    import app.main as main_module
+
+    mock_store = MagicMock()
+    mock_repo = MagicMock()
+    mock_repo.load.side_effect = RuntimeError("pykrx 연결 실패")
+
+    async def noop_watch(path, callback):
+        pass
+
+    with (
+        patch.object(main_module, "store", mock_store),
+        patch.object(main_module, "repo", mock_repo),
+        patch("app.main.watch_csv", noop_watch, create=True),
+        caplog.at_level(logging.ERROR, logger="app.main"),
+    ):
+        async with main_module.lifespan(FastAPI()):
+            await asyncio.sleep(0.05)  # give executor tasks time to complete
+
+    assert any(
+        "pyKrx 증분 갱신 실패" in r.message for r in caplog.records
+    ), "executor 예외가 로그에 기록되지 않음 (RED)"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_awaits_load_tasks_before_close():
+    """store.close()는 load task가 완료된 후에 호출되어야 한다."""
+    import app.main as main_module
+
+    order: list[str] = []
+
+    mock_store = MagicMock()
+    mock_store.close.side_effect = lambda: order.append("close")
+
+    mock_repo = MagicMock()
+
+    def slow_load(market):
+        time.sleep(0.05)
+        order.append(f"load_{market}")
+
+    mock_repo.load.side_effect = slow_load
+
+    async def noop_watch(path, callback):
+        pass
+
+    with (
+        patch.object(main_module, "store", mock_store),
+        patch.object(main_module, "repo", mock_repo),
+        patch("app.main.watch_csv", noop_watch, create=True),
+    ):
+        async with main_module.lifespan(FastAPI()):
+            pass
+
+    assert all(f"load_{m}" in order for m in main_module.MARKET_CODES), \
+        "load task가 실행되지 않음"
+    assert "close" in order
+    assert all(
+        order.index(f"load_{m}") < order.index("close")
+        for m in main_module.MARKET_CODES
+    ), "store.close()가 load task 완료 전에 호출됨 (RED)"

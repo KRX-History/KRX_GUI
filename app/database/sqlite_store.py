@@ -147,9 +147,10 @@ class SQLiteStore:
         return [row[0] for row in cursor.fetchall()]
 
     def close(self) -> None:
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._write_lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
 
 
 store = SQLiteStore()
