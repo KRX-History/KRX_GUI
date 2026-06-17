@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -5,22 +6,36 @@ from fastapi import FastAPI
 
 from app.api.markets import router as markets_router
 from app.repository import MARKET_CODES, repo, store
+from app.repository.market_repo import CSV_PATH
+from app.watchers.csv_watcher import watch_csv
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 1. SQLite 초기화 (WAL + 테이블 생성)
     store.initialize()
-    try:
-        for market in MARKET_CODES:
-            try:
-                repo.load(market)
-            except Exception as exc:
-                logger.warning("초기 로딩 실패 [%s]: %s", market, exc)
-        yield
-    finally:
-        store.close()
+
+    # 2. SQLite → 인메모리 즉시 복구 (pyKrx 없이 서비스 가능)
+    for market in MARKET_CODES:
+        try:
+            repo.load_from_db(market)
+        except Exception as exc:
+            logger.warning("SQLite 복구 실패 [%s]: %s", market, exc)
+
+    # 3. pyKrx 증분 갱신 (백그라운드 스레드, 서버 시작 블로킹 없음)
+    loop = asyncio.get_running_loop()
+    for market in MARKET_CODES:
+        loop.run_in_executor(None, repo.load, market)
+
+    # 4. CSV 감시 시작
+    csv_task = asyncio.create_task(watch_csv(CSV_PATH, repo.ingest_csv))
+
+    yield
+
+    csv_task.cancel()
+    store.close()
 
 
 app = FastAPI(

@@ -182,6 +182,7 @@ def test_dead_code_removed():
     assert not hasattr(_mr, "_merge_sources")
     assert not hasattr(_mr, "ConflictResolution")
     assert not hasattr(_mr, "_BASE_COLS")
+    assert not hasattr(_mr, "_CHECK_COLS")
 
 
 # ── Fix D: 빈 연도 건너뛰기 (회귀 테스트) ────────────────────────────────────
