@@ -1,12 +1,16 @@
 import logging
 import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 
 from app.database.sqlite_store import SQLiteStore, RAW_COLUMNS, store as _default_store
 
 logger = logging.getLogger(__name__)
+
+CSV_PATH = Path(__file__).parent.parent.parent / "data" / "kospi_data.csv"
+CSV_MARKET = "KOSPI"
 
 MARKET_CODES = {
     "KOSPI":  "1001",
@@ -30,6 +34,12 @@ def _next_start(checkpoint: str | None) -> datetime:
 def _prefilter_with_set(df: pd.DataFrame, existing_dates: set[str]) -> pd.DataFrame:
     mask = ~df.index.strftime("%Y-%m-%d").isin(existing_dates)
     return df[mask]
+
+
+def _load_from_csv(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path, parse_dates=["날짜"], index_col="날짜")
+    df.index = pd.to_datetime(df.index)
+    return df.reindex(columns=RAW_COLUMNS)
 
 
 def _add_derived_columns(data: pd.DataFrame) -> pd.DataFrame:
@@ -90,6 +100,21 @@ class MarketRepository:
         if market not in self._data:
             raise KeyError(f"'{market}' 데이터가 적재되지 않았습니다.")
         return self._data[market]  # copy 책임은 실제로 변형이 필요한 서비스 레이어로 이동
+
+    def ingest_csv(self) -> None:
+        if not CSV_PATH.exists():
+            logger.warning("CSV 파일 없음: %s", CSV_PATH)
+            return
+        df = _load_from_csv(CSV_PATH)
+        existing_dates = self._store.get_all_dates(CSV_MARKET)
+        filtered = _prefilter_with_set(df, existing_dates)
+        if not filtered.empty:
+            checkpoint = filtered.index.strftime("%Y-%m-%d").max()
+            self._store.upsert_chunk(CSV_MARKET, filtered, checkpoint)
+        fresh = _add_derived_columns(self._store.load_market(CSV_MARKET))
+        with self._lock:
+            self._data[CSV_MARKET] = fresh
+        logger.info("[%s] CSV 적재 완료: %d행", CSV_MARKET, len(fresh))
 
     def is_loaded(self, market: str) -> bool:
         return market in self._data

@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
@@ -178,11 +179,9 @@ import app.repository.market_repo as _mr  # noqa: E402
 
 def test_dead_code_removed():
     """삭제된 심볼이 모듈에 없어야 한다."""
-    assert not hasattr(_mr, "_load_from_csv")
     assert not hasattr(_mr, "_merge_sources")
     assert not hasattr(_mr, "ConflictResolution")
     assert not hasattr(_mr, "_BASE_COLS")
-    assert not hasattr(_mr, "CSV_PATH")
 
 
 # ── Fix D: 빈 연도 건너뛰기 (회귀 테스트) ────────────────────────────────────
@@ -206,3 +205,33 @@ def test_load_continues_past_empty_year(repo, store, sample_df):
 
     assert "2025" in fetch_call_years
     assert "2026" in fetch_call_years, "2025이 비어도 2026 fetch가 이어져야 함"
+
+
+# ── Task 8: ingest_csv() ───────────────────────────────────────────────────────
+
+
+def test_ingest_csv_loads_data(repo, store, tmp_path):
+    csv_path = tmp_path / "test.csv"
+    csv_path.write_text(
+        "날짜,시가,고가,저가,종가,거래량,거래대금,상장시가총액\n"
+        "2025-06-02,2620.45,2638.90,2611.23,2630.17,412380000,8234500000000,2187650000000000\n"
+    )
+    with patch("app.repository.market_repo.CSV_PATH", csv_path):
+        repo.ingest_csv()
+    assert repo.is_loaded("KOSPI")
+    assert len(repo.get("KOSPI")) == 1
+
+
+def test_ingest_csv_deduplicates(repo, store, tmp_path):
+    csv_path = tmp_path / "test.csv"
+    row = "2025-06-02,2620.45,2638.90,2611.23,2630.17,412380000,8234500000000,2187650000000000\n"
+    csv_path.write_text("날짜,시가,고가,저가,종가,거래량,거래대금,상장시가총액\n" + row)
+    with patch("app.repository.market_repo.CSV_PATH", csv_path):
+        repo.ingest_csv()
+        repo.ingest_csv()
+    assert len(repo.get("KOSPI")) == 1
+
+
+def test_ingest_csv_missing_file_does_not_raise(repo):
+    with patch("app.repository.market_repo.CSV_PATH", Path("/nonexistent/path.csv")):
+        repo.ingest_csv()
