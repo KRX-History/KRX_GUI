@@ -1,5 +1,6 @@
 import logging
 import threading
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -59,6 +60,7 @@ class MarketRepository:
         self._store = store
         self._data: dict[str, pd.DataFrame] = {}
         self._lock = threading.Lock()
+        self._load_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
 
     def load_from_db(self, market: str) -> None:
         df = self._store.load_market(market)
@@ -70,36 +72,38 @@ class MarketRepository:
         logger.info("[%s] SQLite 복구 완료: %d행", market, len(fresh))
 
     def load(self, market: str) -> None:
-        code = MARKET_CODES[market]
-        existing_dates = self._store.get_all_dates(market)
-        checkpoint = self._store.get_checkpoint(market)
-        current = _next_start(checkpoint)
-        today = datetime.today()
+        with self._load_locks[market]:
+            code = MARKET_CODES[market]
+            existing_dates = self._store.get_all_dates(market)
+            checkpoint = self._store.get_checkpoint(market)
+            current = _next_start(checkpoint)
+            today = datetime.today()
 
-        while current <= today:
-            year_end = min(datetime(current.year, 12, 31), today)
-            year_end_str = year_end.strftime("%Y-%m-%d")
-            try:
-                chunk = _fetch_from_pykrx(code, current.strftime("%Y-%m-%d"), year_end_str)
-                if not chunk.empty:
-                    filtered = _prefilter_with_set(chunk, existing_dates)
-                    if not filtered.empty:
-                        self._store.upsert_chunk(market, filtered, year_end_str)
-                        existing_dates.update(filtered.index.strftime("%Y-%m-%d").tolist())
-            except Exception as exc:
-                logger.error("[%s] fetch 실패 (%s): %s — 체크포인트 보존", market, year_end.date(), exc)
-                break
-            current = datetime(current.year + 1, 1, 1)
+            while current <= today:
+                year_end = min(datetime(current.year, 12, 31), today)
+                year_end_str = year_end.strftime("%Y-%m-%d")
+                try:
+                    chunk = _fetch_from_pykrx(code, current.strftime("%Y-%m-%d"), year_end_str)
+                    if not chunk.empty:
+                        filtered = _prefilter_with_set(chunk, existing_dates)
+                        if not filtered.empty:
+                            self._store.upsert_chunk(market, filtered, year_end_str)
+                            existing_dates.update(filtered.index.strftime("%Y-%m-%d").tolist())
+                except Exception as exc:
+                    logger.error("[%s] fetch 실패 (%s): %s — 체크포인트 보존", market, year_end.date(), exc)
+                    break
+                current = datetime(current.year + 1, 1, 1)
 
-        fresh = _add_derived_columns(self._store.load_market(market))
-        with self._lock:
-            self._data[market] = fresh
-        logger.info("[%s] 적재 완료: %d행", market, len(fresh))
+            fresh = _add_derived_columns(self._store.load_market(market))
+            with self._lock:
+                self._data[market] = fresh
+            logger.info("[%s] 적재 완료: %d행", market, len(fresh))
 
     def get(self, market: str) -> pd.DataFrame:
-        if market not in self._data:
-            raise KeyError(f"'{market}' 데이터가 적재되지 않았습니다.")
-        return self._data[market]  # copy 책임은 실제로 변형이 필요한 서비스 레이어로 이동
+        with self._lock:
+            if market not in self._data:
+                raise KeyError(f"'{market}' 데이터가 적재되지 않았습니다.")
+            return self._data[market]
 
     def ingest_csv(self) -> None:
         if not CSV_PATH.exists():
@@ -117,7 +121,8 @@ class MarketRepository:
         logger.info("[%s] CSV 적재 완료: %d행", CSV_MARKET, len(fresh))
 
     def is_loaded(self, market: str) -> bool:
-        return market in self._data
+        with self._lock:
+            return market in self._data
 
 
 # 앱 전역 단일 인스턴스

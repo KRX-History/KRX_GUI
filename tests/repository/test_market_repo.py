@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -236,3 +237,79 @@ def test_ingest_csv_deduplicates(repo, store, tmp_path):
 def test_ingest_csv_missing_file_does_not_raise(repo):
     with patch("app.repository.market_repo.CSV_PATH", Path("/nonexistent/path.csv")):
         repo.ingest_csv()
+
+
+# ── H1: self._data 읽기 lock 보장 ─────────────────────────────────────────────
+
+
+def test_get_acquires_lock(repo, store, sample_df):
+    """get()은 self._lock을 보유해야 한다."""
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    repo.load_from_db("KOSPI")
+
+    done = threading.Event()
+
+    def try_get():
+        repo.get("KOSPI")
+        done.set()
+
+    repo._lock.acquire()
+    t = threading.Thread(target=try_get, daemon=True)
+    t.start()
+    assert not done.wait(timeout=0.15), "get()이 _lock 없이 즉시 실행됨 (RED)"
+    repo._lock.release()
+    assert done.wait(timeout=1.0), "get()이 lock 해제 후 완료되지 않음"
+
+
+def test_is_loaded_acquires_lock(repo, store, sample_df):
+    """is_loaded()은 self._lock을 보유해야 한다."""
+    store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
+    repo.load_from_db("KOSPI")
+
+    done = threading.Event()
+
+    def try_is_loaded():
+        repo.is_loaded("KOSPI")
+        done.set()
+
+    repo._lock.acquire()
+    t = threading.Thread(target=try_is_loaded, daemon=True)
+    t.start()
+    assert not done.wait(timeout=0.15), "is_loaded()이 _lock 없이 즉시 실행됨 (RED)"
+    repo._lock.release()
+    assert done.wait(timeout=1.0)
+
+
+# ── H2: per-market load() single-flight guard ─────────────────────────────────
+
+
+def test_load_has_per_market_lock(repo):
+    """MarketRepository는 _load_locks 속성을 가져야 한다."""
+    assert hasattr(repo, "_load_locks"), "MarketRepository에 _load_locks 없음 (RED)"
+
+
+def test_load_acquires_per_market_lock(repo, store):
+    """load()는 _load_locks[market]을 획득하여 동시 실행을 막아야 한다."""
+    if not hasattr(repo, "_load_locks"):
+        pytest.skip("_load_locks 없음 — test_load_has_per_market_lock 먼저 수정")
+
+    done = threading.Event()
+
+    def try_load():
+        with (
+            patch("app.repository.market_repo._fetch_from_pykrx", return_value=pd.DataFrame()),
+            patch.object(repo._store, "get_checkpoint", return_value="9999-12-30"),
+            patch.object(
+                repo._store, "load_market",
+                return_value=pd.DataFrame(columns=RAW_COLUMNS),
+            ),
+        ):
+            repo.load("KOSPI")
+        done.set()
+
+    repo._load_locks["KOSPI"].acquire()
+    t = threading.Thread(target=try_load, daemon=True)
+    t.start()
+    assert not done.wait(timeout=0.15), "load()이 _load_locks 없이 즉시 실행됨 (RED)"
+    repo._load_locks["KOSPI"].release()
+    assert done.wait(timeout=3.0), "load()이 lock 해제 후 완료되지 않음"
