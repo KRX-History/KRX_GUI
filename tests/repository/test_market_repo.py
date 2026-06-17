@@ -100,8 +100,8 @@ def test_load_fetches_from_checkpoint(repo, store, sample_df):
     store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
     with patch("app.repository.market_repo._fetch_from_pykrx", return_value=pd.DataFrame()) as mock_fetch:
         repo.load("KOSPI")
-    call_args = mock_fetch.call_args
-    assert call_args[0][1] == "2025-01-04"  # start_date is checkpoint + 1 day
+    # Check first call's start_date (not last) — loop may make multiple calls per year
+    assert mock_fetch.call_args_list[0][0][1] == "2025-01-04"
 
 
 def test_load_prefilter_skips_existing_dates(repo, store, sample_df):
@@ -132,3 +132,28 @@ def test_load_updates_memory(repo, store, sample_df):
         repo.load("KOSPI")
     assert repo.is_loaded("KOSPI")
     assert len(repo.get("KOSPI")) == 2
+
+
+# ── H1: empty year must not abort subsequent years ────────────────────────────
+
+
+def test_load_continues_after_empty_year(repo, store):
+    """Empty 1980 must not abort the loop — 1981 data must still be stored."""
+    year_data = pd.DataFrame(
+        {
+            "시가": [100.0], "고가": [105.0], "저가": [99.0], "종가": [103.0],
+            "거래량": [1000.0], "거래대금": [103000.0], "상장시가총액": [1e12],
+        },
+        index=pd.to_datetime(["1981-01-02"]),
+    )
+
+    def _fake_fetch(code, start_date, end_date):
+        if start_date.startswith("1981"):
+            return year_data
+        return pd.DataFrame()
+
+    with patch("app.repository.market_repo._fetch_from_pykrx", side_effect=_fake_fetch):
+        repo.load("KOSPI")
+
+    df = store.load_market("KOSPI")
+    assert len(df) == 1  # 1981 data was stored despite empty 1980

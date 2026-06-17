@@ -142,12 +142,11 @@ class MarketRepository:
             year_end_str = year_end.strftime("%Y-%m-%d")
             try:
                 chunk = _fetch_from_pykrx(code, current.strftime("%Y-%m-%d"), year_end_str)
-                if chunk.empty:
-                    break
-                filtered = _prefilter_with_set(chunk, existing_dates)
-                if not filtered.empty:
-                    self._store.upsert_chunk(market, filtered, year_end_str)
-                    existing_dates.update(filtered.index.strftime("%Y-%m-%d").tolist())
+                if not chunk.empty:
+                    filtered = _prefilter_with_set(chunk, existing_dates)
+                    if not filtered.empty:
+                        self._store.upsert_chunk(market, filtered, year_end_str)
+                        existing_dates.update(filtered.index.strftime("%Y-%m-%d").tolist())
             except Exception as exc:
                 logger.error("[%s] fetch 실패 (%s): %s — 체크포인트 보존", market, year_end.date(), exc)
                 break

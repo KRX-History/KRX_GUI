@@ -319,3 +319,35 @@ def test_markets_in_db_returns_all_markets(store, sample_df):
     store.upsert_chunk("KOSPI", sample_df, "2025-01-03")
     store.upsert_chunk("KOSDAQ", sample_df, "2025-01-03")
     assert set(store.markets_in_db()) == {"KOSPI", "KOSDAQ"}
+
+
+# ── C1: _require_conn() guard (uninitialized store raises RuntimeError) ─────────
+
+
+def _raw_store(tmp_path):
+    """SQLiteStore constructed but NOT initialized."""
+    return SQLiteStore(db_path=tmp_path / "guard.db")
+
+
+def test_require_conn_raises_before_get_checkpoint(tmp_path):
+    s = _raw_store(tmp_path)
+    with pytest.raises(RuntimeError, match="initialize"):
+        s.get_checkpoint("KOSPI")
+
+
+def test_require_conn_raises_before_get_all_dates(tmp_path):
+    s = _raw_store(tmp_path)
+    with pytest.raises(RuntimeError, match="initialize"):
+        s.get_all_dates("KOSPI")
+
+
+def test_require_conn_raises_before_load_market(tmp_path):
+    s = _raw_store(tmp_path)
+    with pytest.raises(RuntimeError, match="initialize"):
+        s.load_market("KOSPI")
+
+
+def test_require_conn_raises_before_upsert_chunk(tmp_path, sample_df):
+    s = _raw_store(tmp_path)
+    with pytest.raises(RuntimeError, match="initialize"):
+        s.upsert_chunk("KOSPI", sample_df, "2025-01-03")

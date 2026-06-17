@@ -90,6 +90,10 @@ class SQLiteStore:
         self._conn: sqlite3.Connection | None = None
         self._write_lock = threading.Lock()
 
+    def _require_conn(self) -> None:
+        if self._conn is None:
+            raise RuntimeError("SQLiteStore.initialize() must be called before use")
+
     def initialize(self) -> None:
         self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -100,6 +104,7 @@ class SQLiteStore:
         self._conn.commit()
 
     def upsert_chunk(self, market: str, df: pd.DataFrame, checkpoint_date: str | None = None) -> None:
+        self._require_conn()
         with self._write_lock:
             with self._conn:
                 if not df.empty:
@@ -112,6 +117,7 @@ class SQLiteStore:
                     )
 
     def load_market(self, market: str) -> pd.DataFrame:
+        self._require_conn()
         cursor = self._conn.execute(_SELECT_MARKET, (market,))
         rows = cursor.fetchall()
         if not rows:
@@ -122,15 +128,18 @@ class SQLiteStore:
         return df.astype(float)
 
     def get_checkpoint(self, market: str) -> str | None:
+        self._require_conn()
         cursor = self._conn.execute(_SELECT_CHECKPOINT, (market,))
         row = cursor.fetchone()
         return row[0] if row else None
 
     def get_all_dates(self, market: str) -> set[str]:
+        self._require_conn()
         cursor = self._conn.execute(_SELECT_ALL_DATES, (market,))
         return {row[0] for row in cursor.fetchall()}
 
     def markets_in_db(self) -> list[str]:
+        self._require_conn()
         cursor = self._conn.execute(_SELECT_MARKETS)
         return [row[0] for row in cursor.fetchall()]
 
