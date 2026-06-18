@@ -1,1 +1,13 @@
 venv/
+.venv/
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+
+# Data
+data/
+.tdd*
